@@ -4,7 +4,13 @@
 #include "platform/data_install.h"
 
 #include <windows.h>
+#ifdef RECOMP_UWP
+#include "uwp/uwp_host.h"
+/* UWP has no message boxes or desktop metrics; the host draws errors. */
+#define MessageBoxA(owner, text, caption, flags) uwp_message_box(text, caption)
+#else
 #include <mmsystem.h>
+#endif
 #include <math.h>
 #include <stdlib.h>
 
@@ -305,7 +311,9 @@ static void frame_limit(int frame, uint32_t gsym)
         if (cap < 0) cap = 0;
         if (cap_start < 0) cap_start = 0;
         if (cap > 0) {
+#ifndef RECOMP_UWP
             timeBeginPeriod(1);
+#endif
             fprintf(stderr, "[win] frame cap %d FPS%s\n", cap,
                     cap_start ? " (delayed)" : "");
         } else {
@@ -322,6 +330,10 @@ static void frame_limit(int frame, uint32_t gsym)
     next += 1.0 / (double)cap;
     if (!timer_tried) {
         timer_tried = 1;
+#ifdef RECOMP_UWP
+        timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                       TIMER_ALL_ACCESS);
+#else
         /* Dynamic lookup keeps the installer's slim headers happy on
          * toolchains that predate the high-resolution timer declaration. */
         HMODULE k32 = GetModuleHandleA("kernel32.dll");
@@ -331,6 +343,7 @@ static void frame_limit(int frame, uint32_t gsym)
         if (create)
             timer = create(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                            TIMER_ALL_ACCESS);
+#endif
     }
     if (timer) {
         double wait = next - now;
@@ -601,8 +614,9 @@ static int run_boot(const char *so)
     int logical_w = is337 ? 1024 : 854;
     int logical_h = is337 ? 600 : 480;
 
-    SetProcessDPIAware();
     int win_w = 1920, win_h = 1080;
+#ifndef RECOMP_UWP   /* UWP: the host's EGL surface is fixed at 1920x1080 */
+    SetProcessDPIAware();
     {
         int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
         if (sw > 0 && sh > 0) {
@@ -612,6 +626,7 @@ static int run_boot(const char *so)
             if (tw >= 854 && th >= 480) { win_w = tw; win_h = th; }
         }
     }
+#endif
     {
         const char *res = getenv("RECOMP_RES");
         const char *ew = getenv("RECOMP_WIDTH");
@@ -619,6 +634,7 @@ static int run_boot(const char *so)
         if (res) sscanf(res, "%dx%d", &win_w, &win_h);
         if (ew) win_w = atoi(ew);
         if (eh) win_h = atoi(eh);
+#ifndef RECOMP_UWP
         if (!res && !ew && !eh && is337) {
             int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
             if (sw >= 1920 && sh >= 1080) {
@@ -630,6 +646,7 @@ static int run_boot(const char *so)
                 win_h = sh > 0 ? sh : 1080;
             }
         }
+#endif
         if (win_w < 320) win_w = 320;
         if (win_h < 200) win_h = 200;
         if (win_w > 7680) win_w = 7680;
@@ -1109,6 +1126,12 @@ static int game_data_present(void)
 #endif
 #endif
 
+#ifdef RECOMP_UWP
+/* The UWP host (src/uwp/uwp_app.cpp) owns the process entry point, sets
+ * LocalState as the working directory and opens the log before calling in. */
+#define main recomp_main
+#endif
+
 int main(int argc, char **argv)
 {
 #ifdef RECOMP_GUI
@@ -1116,6 +1139,7 @@ int main(int argc, char **argv)
      * directory (that is where assets/ and original/ live), route all
      * diagnostics to asphalt5.log, and start the game by default. */
     {
+#ifndef RECOMP_UWP
         char exe[MAX_PATH];
         DWORD n = GetModuleFileNameA(NULL, exe, sizeof(exe));
         if (n > 0 && n < sizeof(exe)) {
@@ -1138,6 +1162,7 @@ int main(int argc, char **argv)
             freopen(path, "w", stderr);
             freopen(path, "a", stdout);
         }
+#endif
 #if !defined(RECOMP_TARGET_337) && !defined(RECOMP_TARGET_341)
         if (!game_data_present()) {
             fprintf(stderr, "[boot] GloftA5HD data folder is missing\n");

@@ -10,9 +10,14 @@
 //            decodes ~1 s chunks on demand (a full 2-minute track decoded
 //            upfront cost seconds of CPU and starved the game).
 // Output: WinMM waveOut, 44.1 kHz stereo, 4 x 2048-frame buffers (~186 ms).
+// The UWP / Xbox build has no WinMM and feeds the same buffers to XAudio2.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef RECOMP_UWP
+#include <xaudio2.h>
+#else
 #include <mmsystem.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,9 +99,15 @@ static char     s_asset_dir[MAX_PATH];
 static HANDLE   s_cache_thread = NULL;
 static volatile int s_cache_run = 0;
 
+#ifdef RECOMP_UWP
+static IXAudio2* s_xa = NULL;
+static IXAudio2MasteringVoice* s_master = NULL;
+static IXAudio2SourceVoice* s_hwo = NULL;   // the output "device", as on WinMM
+#else
 static HWAVEOUT s_hwo = NULL;
 static HANDLE   s_evt = NULL;
 static WAVEHDR  s_hdr[A5_NBUF];
+#endif
 static short*   s_buf[A5_NBUF];
 static int      s_bufidx = 0;
 static HANDLE   s_thread = NULL;
@@ -659,6 +670,72 @@ static void mix_into(short* out, int frames) {
     }
 }
 
+#ifdef RECOMP_UWP
+// XAudio2 plays submitted buffers in order, so with at most A5_NBUF queued
+// the next buffer in rotation is always free to refill.
+static DWORD WINAPI mix_thread(LPVOID param) {
+    (void)param;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    while (s_run) {
+        XAUDIO2_VOICE_STATE st;
+        s_hwo->lpVtbl->GetState(s_hwo, &st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+        for (UINT32 q = st.BuffersQueued; q < A5_NBUF; q++) {
+            short* buf = s_buf[s_bufidx];
+            s_bufidx = (s_bufidx + 1) % A5_NBUF;
+            mix_into(buf, A5_OUT_FRAMES);
+            XAUDIO2_BUFFER xb;
+            memset(&xb, 0, sizeof(xb));
+            xb.AudioBytes = A5_OUT_FRAMES * 2 * sizeof(short);
+            xb.pAudioData = (const BYTE*)buf;
+            if (FAILED(s_hwo->lpVtbl->SubmitSourceBuffer(s_hwo, &xb, NULL))) break;
+        }
+        Sleep(5);
+    }
+    return 0;
+}
+
+int a5audio_init(void) {
+    if (s_hwo) return 0;
+    InitializeCriticalSection(&s_cs);
+    s_cs_ready = 1;
+    if (FAILED(XAudio2Create(&s_xa, 0, XAUDIO2_DEFAULT_PROCESSOR))) {
+        printf("[snd] XAudio2Create failed\n");
+        s_xa = NULL;
+        return -1;
+    }
+    if (FAILED(s_xa->lpVtbl->CreateMasteringVoice(s_xa, &s_master, 2, A5_OUT_RATE, 0, NULL, NULL,
+                                                  AudioCategory_GameEffects))) {
+        printf("[snd] XAudio2 mastering voice failed\n");
+        s_xa->lpVtbl->Release(s_xa);
+        s_xa = NULL;
+        return -1;
+    }
+    WAVEFORMATEX wf;
+    memset(&wf, 0, sizeof(wf));
+    wf.wFormatTag = WAVE_FORMAT_PCM;
+    wf.nChannels = 2;
+    wf.nSamplesPerSec = A5_OUT_RATE;
+    wf.wBitsPerSample = 16;
+    wf.nBlockAlign = 4;
+    wf.nAvgBytesPerSec = A5_OUT_RATE * 4;
+    if (FAILED(s_xa->lpVtbl->CreateSourceVoice(s_xa, &s_hwo, &wf, 0, 2.0f, NULL, NULL, NULL))) {
+        printf("[snd] XAudio2 source voice failed\n");
+        s_hwo = NULL;
+        return -1;
+    }
+    for (int i = 0; i < A5_NBUF; i++)
+        s_buf[i] = (short*)calloc(A5_OUT_FRAMES * 2, sizeof(short));
+    s_hwo->lpVtbl->Start(s_hwo, 0, XAUDIO2_COMMIT_NOW);
+    s_run = 1;
+    s_thread = CreateThread(NULL, 0, mix_thread, NULL, 0, NULL);
+    s_qevt = CreateEvent(NULL, FALSE, FALSE, NULL);
+    s_qrun = 1;
+    s_qthread = CreateThread(NULL, 0, sfx_worker, NULL, 0, NULL);
+    printf("[snd] audio up (XAudio2): %d Hz stereo, %d buffers x %d frames\n",
+           A5_OUT_RATE, A5_NBUF, A5_OUT_FRAMES);
+    return 0;
+}
+#else
 static DWORD WINAPI mix_thread(LPVOID param) {
     (void)param;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
@@ -719,6 +796,7 @@ int a5audio_init(void) {
     printf("[snd] audio up: %d Hz stereo, %d buffers x %d frames\n", A5_OUT_RATE, A5_NBUF, A5_OUT_FRAMES);
     return 0;
 }
+#endif
 
 void a5audio_shutdown(void) {
     if (!s_hwo) return;
@@ -746,12 +824,20 @@ void a5audio_shutdown(void) {
         s_qcount--;
     }
     LeaveCriticalSection(&s_cs);
+#ifdef RECOMP_UWP
+    s_hwo->lpVtbl->Stop(s_hwo, 0, XAUDIO2_COMMIT_NOW);
+    s_hwo->lpVtbl->DestroyVoice(s_hwo);
+    s_hwo = NULL;
+    if (s_master) { s_master->lpVtbl->DestroyVoice(s_master); s_master = NULL; }
+    if (s_xa) { s_xa->lpVtbl->Release(s_xa); s_xa = NULL; }
+#else
     waveOutReset(s_hwo);
     for (int i = 0; i < A5_NBUF; i++)
         waveOutUnprepareHeader(s_hwo, &s_hdr[i], sizeof(WAVEHDR));
     waveOutClose(s_hwo);
     s_hwo = NULL;
     if (s_evt) { CloseHandle(s_evt); s_evt = NULL; }
+#endif
     if (s_cs_ready) { DeleteCriticalSection(&s_cs); s_cs_ready = 0; }
     for (int i = 0; i < A5_MAX_SOUNDS; i++) {
         if (s_sounds[i].pcm && !s_sounds[i].from_cache) free(s_sounds[i].pcm);

@@ -465,6 +465,7 @@ int guest_load_elf_auto(const char *path)
         }
     }
 
+#ifndef RECOMP_UWP
     /* Legacy: Windows resource 111 (kept for compatibility). */
     HRSRC r = FindResourceA(NULL, MAKEINTRESOURCEA(111), RT_RCDATA);
     if (r) {
@@ -481,6 +482,7 @@ int guest_load_elf_auto(const char *path)
             }
         }
     }
+#endif /* !RECOMP_UWP */
 #endif
     return guest_load_elf(path);
 }

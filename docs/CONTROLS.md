@@ -43,7 +43,24 @@ Gamepad (XInput, optional):
 | Y | camera |
 | Start / Back | pause / resume |
 
+| X | tap the screen centre (race intros and tutorials) |
+
 `RECOMP_GAMEPAD_DISABLE=1` disables XInput polling.
+
+### Controller in menus
+
+`RECOMP_PAD_CURSOR=1` turns on the controller cursor that the Xbox build
+always uses:
+
+| Input | Action |
+|---|---|
+| Left stick | move the cursor |
+| A | touch at the cursor (hold to drag) |
+| B | Android Back; in the pause menu, resume |
+| D-pad | the engine's own menu keys |
+
+On Windows the cursor only drives touches and is not drawn; on UWP it is
+drawn over the frame. See [XBOX.md](XBOX.md).
 
 ## Notes
 

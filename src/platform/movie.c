@@ -15,13 +15,19 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <mfapi.h>
+#ifdef RECOMP_UWP
+/* mfidl.h references this desktop-partition type in a struct we never use. */
+typedef struct _MFT_REGISTER_TYPE_INFO { GUID guidMajorType; GUID guidSubtype; } MFT_REGISTER_TYPE_INFO;
+#endif
 #include <mfidl.h>
 #include <mferror.h>
 #include <mfreadwrite.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef RECOMP_UWP
 #include <GL/gl.h>
+#endif
 
 #include "../gl/gl_internal.h"
 #include "audio.h"
@@ -213,6 +219,15 @@ int movie_play(const char *path, int w, int h)
 
     wchar_t wpath[1024];
     MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 1024);
+#ifdef RECOMP_UWP
+    /* Media Foundation treats the path as a URL; make it absolute so it
+     * resolves inside LocalState rather than the read-only package. */
+    {
+        wchar_t full[1024];
+        DWORD n = GetFullPathNameW(wpath, 1024, full, NULL);
+        if (n > 0 && n < 1024) wcscpy(wpath, full);
+    }
+#endif
 
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
     if (FAILED(hr)) {

@@ -22,7 +22,12 @@
 #include "guest.h"
 
 #include <windows.h>
+#ifdef RECOMP_UWP
+/* No opengl32 on UWP: the desktop GL subset is emulated on OpenGL ES. */
+#include "ff/ffgl.h"
+#else
 #include <GL/gl.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

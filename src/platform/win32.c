@@ -5,6 +5,9 @@
 #include "gl/gl_internal.h"
 #include "audio.h"
 #include <xinput.h>
+#ifdef RECOMP_UWP
+#include "uwp/uwp_host.h"
+#endif
 
 
 void platform_crash_log(const char *msg)
@@ -78,10 +81,15 @@ LONG WINAPI gl_crash_filter(EXCEPTION_POINTERS *ep)
 
 void *glproc(const char *name)
 {
+#ifdef RECOMP_UWP
+    (void)name;
+    return NULL;
+#else
     void *p = (void *)wglGetProcAddress(name);
     if (p == NULL || p == (void *)1 || p == (void *)2 || p == (void *)3 || p == (void *)-1)
         return NULL;
     return p;
+#endif
 }
 
 
@@ -369,7 +377,9 @@ void platform_request_exit(void)
         fprintf(stderr, "[exit] Game::Exit pc=%08x lr=%08x sp=%08x\n",
                 g_cpu->pc, g_cpu->r[14], g_cpu->r[13]);
     g_quit = 1;
+#ifndef RECOMP_UWP
     if (g_hwnd) PostMessageA(g_hwnd, WM_CLOSE, 0, 0);
+#endif
 }
 
 /* Mouse race zones (game coordinates, 854x480). */
@@ -512,6 +522,10 @@ static void gamepad_load(void)
     if (g_xinput_loaded) return;
     g_xinput_loaded = 1;
     if (getenv("RECOMP_GAMEPAD_DISABLE")) return;
+#ifdef RECOMP_UWP
+    /* Windows.Gaming.Input, presented as an XInput state. */
+    g_xinput_get_state = (XInputGetStateFn)uwp_xinput_get_state;
+#else
     static const char *dlls[] = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
     for (int i = 0; i < 3; i++) {
         HMODULE h = LoadLibraryA(dlls[i]);
@@ -520,6 +534,7 @@ static void gamepad_load(void)
         if (g_xinput_get_state) break;
         FreeLibrary(h);
     }
+#endif
 }
 
 static void pad_action(int act, int on, int *prev)
@@ -530,6 +545,123 @@ static void pad_action(int act, int on, int *prev)
     else action_up_src(act, ACT_SRC_PAD);
 }
 
+/* ---- gamepad menu cursor ---------------------------------------------- *
+ * Menus are touch driven.  Outside a race the left stick moves a cursor in
+ * the logical canvas and A touches at it (held = drag), so the whole game is
+ * playable from a controller.  B is the Android Back key; in the pause menu
+ * it resumes, like Start.  Always on for UWP; RECOMP_PAD_CURSOR=1 enables it
+ * on Windows.
+ * ---------------------------------------------------------------------- */
+static int g_cur_on, g_cur_touch, g_cur_a, g_cur_b, g_cur_dpad;
+static float g_cur_x = -1.0f, g_cur_y;
+static double g_cur_last;
+
+static void race_touch_press(int x, int y);
+static void race_touch_release(void);
+
+static int pad_cursor_enabled(void)
+{
+#ifdef RECOMP_UWP
+    return 1;
+#else
+    static int on = -1;
+    if (on < 0) on = getenv("RECOMP_PAD_CURSOR") != NULL;
+    return on;
+#endif
+}
+
+static double pad_now(void)
+{
+    static LARGE_INTEGER f;
+    LARGE_INTEGER q;
+    if (!f.QuadPart) QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&q);
+    return (double)q.QuadPart / (double)f.QuadPart;
+}
+
+static void pad_cursor_hide(void)
+{
+    if (g_cur_touch) {
+        touch("notifyTouchReleased", (int)g_cur_x, (int)g_cur_y, 0);
+        g_cur_touch = 0;
+    }
+    g_cur_on = 0;
+    g_cur_last = 0.0;
+}
+
+static float stick_axis(SHORT v)
+{
+    float f = v / 32767.0f;
+    const float dz = 0.24f;
+    if (f > -dz && f < dz) return 0.0f;
+    f = f > 0 ? (f - dz) / (1.0f - dz) : (f + dz) / (1.0f - dz);
+    return f * (f < 0 ? -f : f);   /* squared response for fine aiming */
+}
+
+static void pad_cursor_update(const XINPUT_GAMEPAD *g)
+{
+    if (!pad_cursor_enabled()) return;
+    double now = pad_now();
+    double dt = g_cur_last > 0.0 ? now - g_cur_last : 0.0;
+    if (dt > 0.1) dt = 0.1;
+    g_cur_last = now;
+    if (g_cur_x < 0.0f) { g_cur_x = g_logical_w * 0.5f; g_cur_y = g_logical_h * 0.5f; }
+
+    float ax = stick_axis(g->sThumbLX), ay = -stick_axis(g->sThumbLY);
+    if (ax != 0.0f || ay != 0.0f) {
+        float speed = g_logical_w * 0.9f;      /* canvas widths per second */
+        float ox = g_cur_x, oy = g_cur_y;
+        g_cur_x += ax * speed * (float)dt;
+        g_cur_y += ay * speed * (float)dt;
+        if (g_cur_x < 0) g_cur_x = 0;
+        if (g_cur_y < 0) g_cur_y = 0;
+        if (g_cur_x > g_logical_w - 1) g_cur_x = (float)(g_logical_w - 1);
+        if (g_cur_y > g_logical_h - 1) g_cur_y = (float)(g_logical_h - 1);
+        g_cur_on = 1;
+        if (g_cur_touch && ((int)ox != (int)g_cur_x || (int)oy != (int)g_cur_y))
+            touch("notifyTouchMoved", (int)g_cur_x, (int)g_cur_y, 0);
+    }
+
+    int a = (g->wButtons & XINPUT_GAMEPAD_A) != 0;
+    if (a && !g_cur_a) {
+        g_cur_on = 1;
+        touch("notifyTouchPress", (int)g_cur_x, (int)g_cur_y, 0);
+        g_cur_touch = 1;
+    } else if (!a && g_cur_a && g_cur_touch) {
+        touch("notifyTouchReleased", (int)g_cur_x, (int)g_cur_y, 0);
+        g_cur_touch = 0;
+    }
+    g_cur_a = a;
+
+    int b = (g->wButtons & XINPUT_GAMEPAD_B) != 0;
+    if (b && !g_cur_b) {
+        if (pause_menu_active()) pause_toggle();
+        else { game_key(AKEY_BACK, 1); game_key(AKEY_BACK, 0); }
+    }
+    g_cur_b = b;
+
+    /* The D-pad also drives the engine's own key navigation where a menu
+     * supports it (the Sony Ericsson build has Xperia PLAY key handling). */
+    static const struct { WORD bit; int code; } dk[] = {
+        { XINPUT_GAMEPAD_DPAD_UP, AKEY_DPAD_UP }, { XINPUT_GAMEPAD_DPAD_DOWN, AKEY_DPAD_DOWN },
+        { XINPUT_GAMEPAD_DPAD_LEFT, AKEY_DPAD_LEFT }, { XINPUT_GAMEPAD_DPAD_RIGHT, AKEY_DPAD_RIGHT },
+    };
+    for (int i = 0; i < 4; i++) {
+        int on = (g->wButtons & dk[i].bit) != 0, was = (g_cur_dpad >> i) & 1;
+        if (on != was) game_key(dk[i].code, on);
+        g_cur_dpad = (g_cur_dpad & ~(1 << i)) | (on << i);
+    }
+}
+
+/* Cursor position in client pixels, or 0 when hidden. */
+int platform_pad_cursor(int *x, int *y)
+{
+    if (!g_cur_on) return 0;
+    *x = (int)((int64_t)g_cur_x * g_client_w / (g_logical_w ? g_logical_w : 1));
+    *y = (int)((int64_t)g_cur_y * g_client_h / (g_logical_h ? g_logical_h : 1));
+    return 1;
+}
+
 static void gamepad_poll(void)
 {
     gamepad_load();
@@ -537,8 +669,10 @@ static void gamepad_poll(void)
 
     XINPUT_STATE st;
     int connected = (g_xinput_get_state(0, &st) == ERROR_SUCCESS);
-    static int left, right, brake, accel, nitro, camera, back;
+    static int left, right, brake, accel, nitro, camera, back, tap;
     if (!connected || !game_in_race()) {
+        if (connected) pad_cursor_update(&st.Gamepad);
+        else pad_cursor_hide();
         if (connected && pause_menu_active()) {
             /* The pause overlay is outside GS_Run, but Start/Back should
              * still resume it.  Edge-detect so the press that opened the
@@ -560,6 +694,7 @@ static void gamepad_poll(void)
     }
     if (!g_pad_was_connected) {
         g_pad_was_connected = 1;
+        pad_cursor_hide();
         if (getenv("RECOMP_INPUT_LOG")) fprintf(stderr, "[input] gamepad connected\n");
     }
 
@@ -588,6 +723,11 @@ static void gamepad_poll(void)
     int bk = (g->wButtons & (XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK)) != 0;
     if (bk && !back) pause_toggle();
     back = bk;
+    /* X taps the screen centre: race intros and tutorials wait for a touch. */
+    int x = (g->wButtons & XINPUT_GAMEPAD_X) != 0;
+    if (x && !tap) race_touch_press(g_logical_w / 2, g_logical_h / 2);
+    else if (!x && tap) race_touch_release();
+    tap = x;
 }
 
 static void race_touch_press(int x, int y)
@@ -664,6 +804,56 @@ static void release_race_inputs(void)
     g_nitro_ticks = 0;   /* do not fire a pending tap after pause/resume */
 }
 
+/* Keyboard actions shared by the Win32 window procedure and the UWP
+ * CoreWindow key events (virtual-key codes are the same). */
+static void key_event(unsigned vk, int down)
+{
+    if (down) {
+        switch (vk) {
+        case VK_LEFT:  action_down(ACT_STEER_L); break;
+        case VK_RIGHT: action_down(ACT_STEER_R); break;
+        case 'A':      action_down(ACT_STEER_L); break;
+        case 'D':      action_down(ACT_STEER_R); break;
+        case VK_UP:    action_down(ACT_ACCEL);   break;
+        case 'W':      action_down(ACT_ACCEL);   break;
+        case VK_DOWN:  action_down(ACT_BRAKE);   break;
+        case 'S':      action_down(ACT_BRAKE);   break;
+        case VK_SPACE: nitro_down();              break;
+        case 'C':      if (g_race_now) cycle_camera(); break;
+        case VK_ESCAPE:
+            pause_toggle();
+            break;
+        }
+        return;
+    }
+    switch (vk) {
+    case VK_LEFT:  action_up(ACT_STEER_L); break;
+    case VK_RIGHT: action_up(ACT_STEER_R); break;
+    case 'A':      action_up(ACT_STEER_L); break;
+    case 'D':      action_up(ACT_STEER_R); break;
+    case VK_UP:    action_up(ACT_ACCEL);   break;
+    case 'W':      action_up(ACT_ACCEL);   break;
+    case VK_DOWN:  action_up(ACT_BRAKE);   break;
+    case 'S':      action_up(ACT_BRAKE);   break;
+    case VK_SPACE: nitro_up();              break;
+    case VK_ESCAPE:
+        break;
+    }
+}
+
+static void focus_lost(void)
+{
+    action_release_all();
+    race_touch_release();
+    if (g_zone) zone_set(ZONE_NONE);
+    nitro_up();
+}
+
+#ifdef RECOMP_UWP
+static int g_movie_active;   /* movie pump owns the keyboard (Esc skips) */
+void platform_key_event(int vk, int down) { if (!g_movie_active) key_event((unsigned)vk, down); }
+void platform_focus_lost(void) { focus_lost(); }
+#else
 LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -687,51 +877,49 @@ LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             return DefWindowProcA(h, msg, wp, lp);
         int ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
         if (ctrl && wp == 'Q') { g_quit = 1; DestroyWindow(h); return 0; }
-        switch (wp) {
-        case VK_LEFT:  action_down(ACT_STEER_L); break;
-        case VK_RIGHT: action_down(ACT_STEER_R); break;
-        case 'A':      action_down(ACT_STEER_L); break;
-        case 'D':      action_down(ACT_STEER_R); break;
-        case VK_UP:    action_down(ACT_ACCEL);   break;
-        case 'W':      action_down(ACT_ACCEL);   break;
-        case VK_DOWN:  action_down(ACT_BRAKE);   break;
-        case 'S':      action_down(ACT_BRAKE);   break;
-        case VK_SPACE: nitro_down();              break;
-        case 'C':      if (g_race_now) cycle_camera(); break;
-        case VK_ESCAPE:
-            pause_toggle();
-            break;
-        }
+        key_event((unsigned)wp, 1);
         return 0;
     }
     case WM_KEYUP:
     case WM_SYSKEYUP:
-        switch (wp) {
-        case VK_LEFT:  action_up(ACT_STEER_L); break;
-        case VK_RIGHT: action_up(ACT_STEER_R); break;
-        case 'A':      action_up(ACT_STEER_L); break;
-        case 'D':      action_up(ACT_STEER_R); break;
-        case VK_UP:    action_up(ACT_ACCEL);   break;
-        case 'W':      action_up(ACT_ACCEL);   break;
-        case VK_DOWN:  action_up(ACT_BRAKE);   break;
-        case 'S':      action_up(ACT_BRAKE);   break;
-        case VK_SPACE: nitro_up();              break;
-        case VK_ESCAPE:
-            break;
-        }
+        key_event((unsigned)wp, 0);
         return 0;
     case WM_KILLFOCUS:
-        action_release_all();
-        race_touch_release();
-        if (g_zone) zone_set(ZONE_NONE);
-        nitro_up();
+        focus_lost();
         return 0;
     default:
         return DefWindowProcA(h, msg, wp, lp);
     }
 }
+#endif /* !RECOMP_UWP */
 
 
+#ifdef RECOMP_UWP
+/* The CoreWindow and its EGL surface (ANGLE on Direct3D 11) are created by
+ * the UWP host before the game boots; the surface size is fixed there. */
+int platform_init(int width, int height)
+{
+    (void)width; (void)height;
+    int w = 0, h = 0;
+    if (uwp_surface_size(&w, &h) != 0) {
+        fprintf(stderr, "[uwp] no EGL surface\n");
+        return -1;
+    }
+    SetUnhandledExceptionFilter(gl_crash_filter);
+    if (ff_init(uwp_gl_getproc) != 0) return -1;
+    ff_set_surface_size(w, h);
+    g_client_w = g_win_w = w;
+    g_client_h = g_win_h = h;
+    pglActiveTexture = ff_ActiveTexture;
+    pglClientActiveTexture = ff_ClientActiveTexture;
+    pglBindBuffer = ff_BindBuffer;
+    pglCompressedTexImage2D = ff_CompressedTexImage2D;
+    g_hrc = (HGLRC)(uintptr_t)1;   /* "context present" for the GL helpers */
+    glViewport(0, 0, w, h);
+    fprintf(stderr, "[uwp] %dx%d surface\n", w, h);
+    return 0;
+}
+#else
 int platform_init(int width, int height)
 {
     /* Without this, Windows virtualises a 1920x1080 request down to the
@@ -804,6 +992,7 @@ int platform_init(int width, int height)
             (const char *)glGetString(GL_VERSION));
     return 0;
 }
+#endif
 
 
 /* ---- vox audio pump ----------------------------------------------------
@@ -1003,14 +1192,43 @@ static void hold_start_orientation(void)
     }
 }
 
+/* Pointer position in logical canvas coordinates and the primary button. */
+static int host_pointer(int *gx, int *gy, int *down)
+{
+#ifdef RECOMP_UWP
+    int px = 0, py = 0;
+    int have = uwp_pointer(&px, &py, down);
+    if (!have) return 0;
+    *gx = (int)((int64_t)px * g_logical_w / (g_client_w ? g_client_w : 1));
+    *gy = (int)((int64_t)py * g_logical_h / (g_client_h ? g_client_h : 1));
+    return 1;
+#else
+    POINT p;
+    int have = 0;
+    *down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (GetCursorPos(&p) && ScreenToClient(g_hwnd, &p)) {
+        *gx = (int)((int64_t)p.x * g_logical_w / (g_client_w ? g_client_w : 1));
+        *gy = (int)((int64_t)p.y * g_logical_h / (g_client_h ? g_client_h : 1));
+        have = 1;
+    }
+    return have;
+#endif
+}
+
 void platform_pump(void)
 {
+#ifdef RECOMP_UWP
+    g_movie_active = 0;
+    uwp_pump_events();
+    if (uwp_window_closed()) g_quit = 1;
+#else
     MSG msg;
     while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) g_quit = 1;
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
+#endif
     if (!g_cpu) return;
     vox_audio_pump();
 
@@ -1043,15 +1261,8 @@ void platform_pump(void)
     }
     gamepad_poll();
 
-    POINT p;
-    int have = 0, gx = 0, gy = 0;
-    if (GetCursorPos(&p) && ScreenToClient(g_hwnd, &p)) {
-        gx = (int)((int64_t)p.x * g_logical_w / (g_client_w ? g_client_w : 1));
-        gy = (int)((int64_t)p.y * g_logical_h / (g_client_h ? g_client_h : 1));
-        have = 1;
-    }
-
-    int down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    int gx = 0, gy = 0, down = 0;
+    int have = host_pointer(&gx, &gy, &down);
 
     if (race) {
         int inside = have && gx >= 0 && gx <= 853 && gy >= 0 && gy <= 479;
@@ -1112,7 +1323,20 @@ void platform_swap(void)
     g_swap_count++;
     capture_frame();
     scene_dump();
+#ifdef RECOMP_UWP
+    {
+        int cx, cy;
+        if (platform_pad_cursor(&cx, &cy)) {
+            int r = g_client_h / 60 + 4;
+            ff_overlay_rect(cx - r, cy - r, 2 * r, 2 * r, 1.0f, 1.0f, 1.0f, 1.0f);
+            ff_overlay_rect(cx - r + 3, cy - r + 3, 2 * r - 6, 2 * r - 6, 0.05f, 0.15f, 0.45f, 1.0f);
+            ff_overlay_rect(cx - 2, cy - 2, 4, 4, 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+    }
+    uwp_swap();
+#else
     if (g_hdc && g_hrc) SwapBuffers(g_hdc);
+#endif
     if (gl_stats_env() && (g_swap_count % 120) == 0)
         fprintf(stderr,
                 "[gl] swap=%d draws=%llu skinned=%llu oes(cur=%llu idx=%llu w=%llu) "
@@ -1133,6 +1357,28 @@ void platform_swap(void)
  * the GL back buffer, but consume mouse/keyboard events so a skip does not
  * also become a delayed touch or key in the game.  Returns bit 0 for close,
  * bit 1 for a click on our window and bit 2 for Esc. */
+#ifdef RECOMP_UWP
+int platform_movie_pump(void)
+{
+    static int prev_skip = 1;
+    if (!g_movie_active) uwp_take_escape();   /* drop a stale Esc */
+    g_movie_active = 1;
+    uwp_pump_events();
+    if (uwp_window_closed()) g_quit = 1;
+    XINPUT_STATE st;
+    int skip = 0;
+    if (uwp_xinput_get_state(0, &st) == ERROR_SUCCESS)
+        skip = (st.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B |
+                                       XINPUT_GAMEPAD_START)) != 0;
+    int px, py, down = 0;
+    if (uwp_pointer(&px, &py, &down) && down) skip = 1;
+    /* Skip on a new press only, so a held button does not skip every movie. */
+    int clicked = skip && !prev_skip;
+    prev_skip = skip;
+    uwp_swap();
+    return (g_quit ? 1 : 0) | (clicked ? 2 : 0) | (uwp_take_escape() ? 4 : 0);
+}
+#else
 int platform_movie_pump(void)
 {
     MSG msg;
@@ -1161,6 +1407,7 @@ int platform_movie_pump(void)
     if (g_hdc && g_hrc) SwapBuffers(g_hdc);
     return (g_quit ? 1 : 0) | (clicked ? 2 : 0) | (escape ? 4 : 0);
 }
+#endif
 
 
 int platform_client_width(void) { return g_client_w; }

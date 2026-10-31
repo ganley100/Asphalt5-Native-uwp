@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- UWP package manifest for the Xbox One (Dev Mode) / Windows app build.
+     Generated into the AppxLayout by src/uwp/uwp.cmake. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity Name="Asphalt5Native"
+            Publisher="@UWP_PUBLISHER@"
+            Version="@UWP_VERSION@"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Asphalt 5 Native</DisplayName>
+    <PublisherDisplayName>Asphalt 5 Native (unofficial)</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+    <TargetDeviceFamily Name="Windows.Xbox" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+    <!-- ANGLE is built with the Visual C++ app runtime. -->
+    <PackageDependency Name="Microsoft.VCLibs.140.00" MinVersion="14.0.24217.0"
+                       Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="Asphalt5.exe" EntryPoint="Asphalt5.App">
+      <uap:VisualElements
+        DisplayName="Asphalt 5"
+        Description="Asphalt 5 HD, natively recompiled from your own APK (unofficial)"
+        BackgroundColor="#0b1020"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#0b1020" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Lets the first-launch importer read E:\Asphalt5 on a USB drive with
+         plain Win32 file APIs.  Accepted for sideloaded Dev Mode packages. -->
+    <rescap:Capability Name="broadFileSystemAccess" />
+  </Capabilities>
+</Package>

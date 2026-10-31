@@ -35,6 +35,7 @@ It does not contain the APK, the original `.so`, or the game data packs.
 | Movies | Intro and career H.264 videos |
 | Pause / exit | `Esc` toggles pause/resume; in-game Exit quits |
 | Installer | One setup builds either APK locally |
+| Xbox One (UWP) | Experimental 3.2.4 build: ANGLE/Direct3D 11, XAudio2, controller cursor ([docs/XBOX.md](docs/XBOX.md)) |
 
 ## Requirements
 
@@ -95,6 +96,14 @@ Outputs:
 - `build/asphalt5.exe` - console development build
 - `Asphalt5.exe` - GUI build in the repository root
 
+## Xbox One
+
+An experimental UWP build runs on Xbox One/Series consoles in Developer
+Mode, and as an app on Windows. It uses the same 3.2.4 translation, renders
+through ANGLE (OpenGL ES on Direct3D 11), and is fully playable with a
+controller. On first launch the app unpacks your APK and data. CI builds a
+signed `.appx`. See [docs/XBOX.md](docs/XBOX.md).
+
 ## Controls
 
 Mouse and keyboard work out of the box; an XInput controller is optional.
@@ -115,6 +124,8 @@ The visual tests need the APK and game data. CTest uses the library from
 
 ```
 src/          Win32 host, guest runtime, OpenGL layer
+src/uwp/      UWP / Xbox One host (CoreWindow, EGL, gamepad, first-run import)
+src/gl/ff/    fixed-function OpenGL emulation on OpenGL ES (UWP build)
 generated/    split translation of libasphalt5.so (89 units)
 tools/        recompiler, patcher, packaging and test utilities
 tests/        CTest and smoke tests

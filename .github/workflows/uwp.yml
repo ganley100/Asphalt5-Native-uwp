@@ -1,0 +1,52 @@
+name: UWP / Xbox One
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ff-gles-tests:
+    name: GLES fixed-function tests (Mesa)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Mesa EGL / GLES
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri
+      - name: Build and run
+        run: |
+          gcc -O1 -Wall -DAPIENTRY= -Isrc/gl/ff tests/ff_gles_test.c src/gl/ff/ff_gles.c -lEGL -lm -o ff_gles_test
+          EGL_PLATFORM=surfaceless ./ff_gles_test
+
+  appx:
+    name: Build .appx (x64)
+    runs-on: windows-2022
+    env:
+      LLVM_MINGW_VERSION: "20251104"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install llvm-mingw and Ninja
+        shell: pwsh
+        run: |
+          $v = $env:LLVM_MINGW_VERSION
+          Invoke-WebRequest "https://github.com/mstorsjo/llvm-mingw/releases/download/$v/llvm-mingw-$v-ucrt-x86_64.zip" -OutFile llvm-mingw.zip
+          Expand-Archive llvm-mingw.zip -DestinationPath C:\
+          "C:\llvm-mingw-$v-ucrt-x86_64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+      - name: Configure
+        run: cmake -S . -B build-uwp -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/uwp-x64.cmake -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-uwp
+      - name: Package and sign
+        shell: pwsh
+        run: tools\uwp\package.ps1 -Layout build-uwp\AppxLayout -Out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Asphalt5Native-UWP-x64
+          path: |
+            dist/*.appx
+            dist/*.cer
+            dist/Dependencies/
+          if-no-files-found: error

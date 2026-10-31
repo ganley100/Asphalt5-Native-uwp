@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased - Xbox One (UWP)
+
+- Added an experimental UWP build for Xbox One/Series Developer Mode and
+  Windows 10/11 (3.2.4). See `docs/XBOX.md`.
+- New CoreWindow host (`src/uwp/`). It uses EGL on ANGLE (Direct3D 11),
+  `Windows.Gaming.Input`, and LocalState as the working directory.
+- New fixed-function OpenGL emulation on OpenGL ES (`src/gl/ff/`). It covers
+  matrix stacks, client arrays (including `GL_FIXED`), lighting, fog, alpha
+  test and the texture environments including COMBINE, using generated and
+  cached shaders. It ships with Mesa pixel tests (`tests/ff_gles_test.c`).
+- XAudio2 output path in `audio.c`.
+- Controller cursor for the touch menus (left stick + A, B = back). It is
+  also available on Windows with `RECOMP_PAD_CURSOR=1`. X taps the screen
+  centre during races.
+- On first launch, the app unpacks the APK and copies `GloftA5HD` from
+  LocalState, the package, or `<USB>:\Asphalt5`.
+- CMake toolchain `cmake/uwp-x64.cmake` (llvm-mingw), packaging script
+  `tools/uwp/package.ps1`, and a GitHub Actions workflow that builds and
+  signs the `.appx`.
+
 ## 2.0.1 - 2026-10-29
 
 - Fixed the Microsoft Defender false positive on `Asphalt5Setup.exe`

@@ -11,6 +11,11 @@ else()
   set(GENERATED_FUNCTION_SOURCES "${GENERATED_DIR}/functions.c")
 endif()
 
+if(RECOMP_UWP)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/uwp/uwp.cmake)
+  return()
+endif()
+
 add_library(asphalt5_core STATIC
   core/guest.c
   core/imports.c
