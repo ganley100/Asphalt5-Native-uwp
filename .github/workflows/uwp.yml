@@ -34,10 +34,12 @@ jobs:
           Invoke-WebRequest "https://github.com/mstorsjo/llvm-mingw/releases/download/$v/llvm-mingw-$v-ucrt-x86_64.zip" -OutFile llvm-mingw.zip
           Expand-Archive llvm-mingw.zip -DestinationPath C:\
           "C:\llvm-mingw-$v-ucrt-x86_64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+          choco install ninja -y --no-progress
       - name: Configure
-        run: cmake -S . -B build-uwp -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/uwp-x64.cmake -DCMAKE_BUILD_TYPE=Release
+        shell: cmd
+        run: cmake -S . -B build-uwp -G Ninja "-DCMAKE_TOOLCHAIN_FILE=cmake/uwp-x64.cmake" -DCMAKE_BUILD_TYPE=Release
       - name: Build
+        shell: cmd
         run: cmake --build build-uwp
       - name: Package and sign
         shell: pwsh
